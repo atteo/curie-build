@@ -69,21 +69,36 @@ impl Pom {
 
     /// Resolve `${property}` references against the pom's own properties and
     /// a small set of built-in variables derived from parent/self.
+    ///
+    /// Iterates until stable (up to 10 passes) to handle chained references
+    /// such as `${jackson.version.annotations}` → `${jackson.version}` → `2.17.2`.
     pub fn resolve_value(&self, value: &str) -> String {
         if !value.contains("${") {
             return value.to_string();
         }
         let mut result = value.to_string();
 
-        // Built-in project variables.
-        if let Some(v) = self.effective_version() {
-            result = result.replace("${project.version}", v);
-            result = result.replace("${project.parent.version}", v);
-        }
+        for _ in 0..10 {
+            if !result.contains("${") {
+                break;
+            }
+            let prev = result.clone();
 
-        // User-defined <properties>.
-        for (k, v) in &self.properties {
-            result = result.replace(&format!("${{{}}}", k), v);
+            // Built-in project variables.
+            if let Some(v) = self.effective_version() {
+                result = result.replace("${project.version}", v);
+                result = result.replace("${project.parent.version}", v);
+            }
+
+            // User-defined <properties>.
+            for (k, v) in &self.properties {
+                result = result.replace(&format!("${{{}}}", k), v);
+            }
+
+            // No progress — stop to avoid infinite loop.
+            if result == prev {
+                break;
+            }
         }
 
         result
