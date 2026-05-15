@@ -84,7 +84,7 @@ fn build_with_user_dockerfile(
     jar: &Path,
     image_ref: &str,
 ) -> Result<()> {
-    println!("  Using Dockerfile from project root");
+    println!("  Dockerfile      using project root Dockerfile");
 
     // Make JAR path relative to project root for the build arg.
     let jar_rel = jar
@@ -107,7 +107,7 @@ fn build_with_user_dockerfile(
         bail!("docker build failed");
     }
 
-    println!("  Image built: {}", image_ref);
+    println!("  Docker image    {}", image_ref);
     Ok(())
 }
 
@@ -132,6 +132,9 @@ fn build_with_generated_dockerfile(
     if mtime(jar) > mtime(&jar_dest) {
         std::fs::copy(jar, &jar_dest)
             .with_context(|| format!("failed to copy JAR to {}", jar_dest.display()))?;
+        println!("  Docker app JAR  copied");
+    } else {
+        println!("  Docker app JAR  up to date");
     }
 
     // Copy dependency JARs into target/docker/libs/ (skip up-to-date files).
@@ -141,6 +144,7 @@ fn build_with_generated_dockerfile(
         std::fs::create_dir_all(&libs_dir).context("failed to create target/docker/libs")?;
 
         let mut copied = 0usize;
+        let mut skipped = 0usize;
         for dep in dep_jars {
             let fname = dep
                 .file_name()
@@ -152,31 +156,37 @@ fn build_with_generated_dockerfile(
                 std::fs::copy(dep, &dest)
                     .with_context(|| format!("failed to copy dep JAR {} to {}", dep.display(), dest.display()))?;
                 copied += 1;
+            } else {
+                skipped += 1;
             }
             dep_filenames.push(fname);
         }
 
-        if copied > 0 {
-            println!("  Copied {} dep JAR(s) to target/docker/libs/", copied);
-        } else {
-            println!("  Dep JARs up to date");
+        match (copied, skipped) {
+            (0, _) => println!("  Docker dep JARs up to date"),
+            (c, 0) => println!("  Docker dep JARs {} copied", c),
+            (c, s) => println!("  Docker dep JARs {} copied, {} up to date", c, s),
         }
     }
 
-    // Generate the Dockerfile.
+    // Generate the Dockerfile — skip write if content is unchanged.
     let dockerfile_content =
         generate_dockerfile(&desc.docker.base_image, &jar_filename, &dep_filenames);
     let dockerfile_path = docker_dir.join("Dockerfile");
-    std::fs::write(&dockerfile_path, &dockerfile_content)
-        .context("failed to write generated Dockerfile")?;
-
-    println!(
-        "  Generated {}",
-        dockerfile_path
-            .strip_prefix(project_root)
-            .unwrap_or(&dockerfile_path)
-            .display()
-    );
+    let existing = std::fs::read_to_string(&dockerfile_path).unwrap_or_default();
+    if existing == dockerfile_content {
+        println!("  Dockerfile      up to date");
+    } else {
+        std::fs::write(&dockerfile_path, &dockerfile_content)
+            .context("failed to write generated Dockerfile")?;
+        println!(
+            "  Dockerfile      generated  ({})",
+            dockerfile_path
+                .strip_prefix(project_root)
+                .unwrap_or(&dockerfile_path)
+                .display()
+        );
+    }
 
     let status = Command::new("docker")
         .arg("build")
@@ -190,7 +200,7 @@ fn build_with_generated_dockerfile(
         bail!("docker build failed");
     }
 
-    println!("  Image built: {}", image_ref);
+    println!("  Docker image    {}", image_ref);
     Ok(())
 }
 

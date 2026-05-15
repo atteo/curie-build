@@ -39,7 +39,7 @@ pub fn build(project_root: &Path, opts: BuildOptions) -> Result<()> {
     let output = do_build(project_root, &desc)?;
 
     println!(
-        "Built {}",
+        "  Done            {}",
         output
             .jar
             .strip_prefix(project_root)
@@ -48,7 +48,7 @@ pub fn build(project_root: &Path, opts: BuildOptions) -> Result<()> {
     );
 
     if !opts.no_docker && descriptor::docker_enabled(project_root, &desc) {
-        println!("Building Docker image");
+        println!("  Docker image    building {}", desc.image_ref());
         docker::docker_build(project_root, &desc, &output.jar, &output.dep_jars)?;
     }
 
@@ -75,7 +75,6 @@ pub fn do_build(
     let dep_jars = if desc.dependencies.is_empty() {
         vec![]
     } else {
-        println!("  Resolving dependencies");
         let pairs: Vec<(&str, &str)> = desc
             .dependencies
             .iter()
@@ -91,14 +90,17 @@ pub fn do_build(
             })
             .collect();
 
-        resolve(
+        let jars = resolve(
             &pairs,
             &ResolveOptions {
                 extra_repos,
-                verbose: true,
+                verbose: false,
             },
         )
-        .context("dependency resolution failed")?
+        .context("dependency resolution failed")?;
+
+        println!("  Resolve deps    {} JAR(s)", jars.len());
+        jars
     };
 
     // --- discover sources (exclude *Test.java, *Tests.java, *Spec.java) ------
@@ -126,8 +128,13 @@ pub fn do_build(
 
     // --- compile (incremental) -----------------------------------------------
     let toml_path = project_root.join("curie.toml");
-    if needs_recompile(&sources, &classes_dir, &toml_path) {
-        println!("  Compiling {} source file(s)", sources.len());
+    let compile_status = needs_recompile(&sources, &classes_dir, &toml_path);
+    if compile_status.needs_recompile() {
+        println!(
+            "  Compile         {} source file(s)  [{}]",
+            sources.len(),
+            compile_status.reason()
+        );
 
         let mut javac = Command::new("javac");
         javac
@@ -153,7 +160,7 @@ pub fn do_build(
             bail!("compilation failed");
         }
     } else {
-        println!("  Compiling: up to date");
+        println!("  Compile         up to date");
     }
 
     // --- package (deterministic JAR, incremental) ----------------------------
@@ -164,11 +171,11 @@ pub fn do_build(
     let jar_path = output_dir.join(&jar_name);
 
     if needs_repackage(&jar_path, &classes_dir) {
-        println!("  Packaging {}", jar_name);
+        println!("  Package         {}", jar_name);
         write_deterministic_jar(&jar_path, &classes_dir, &desc.application.main_class, &dep_jars)
             .context("failed to write JAR")?;
     } else {
-        println!("  Packaging: up to date");
+        println!("  Package         up to date");
     }
 
     Ok(BuildOutput { jar: jar_path, dep_jars })
@@ -209,27 +216,52 @@ pub(crate) fn newest_mtime(paths: &[PathBuf]) -> SystemTime {
         .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
-/// Returns `true` when any source file (or `curie.toml`) is newer than the
-/// oldest `.class` file, or when no `.class` files exist yet.
+/// Reason a recompile is required, or confirmation that it is not.
+#[derive(Debug, PartialEq)]
+pub(crate) enum CompileStatus {
+    /// No `.class` files exist yet.
+    NoClassFiles,
+    /// At least one source file is newer than the oldest `.class` file.
+    SourceChanged,
+    /// `curie.toml` is newer than the oldest `.class` file.
+    TomlChanged,
+    /// All outputs are up to date — no recompile needed.
+    UpToDate,
+}
+
+impl CompileStatus {
+    pub(crate) fn needs_recompile(&self) -> bool {
+        !matches!(self, CompileStatus::UpToDate)
+    }
+
+    /// Short human-readable reason appended to the "Compile" log line.
+    pub(crate) fn reason(&self) -> &'static str {
+        match self {
+            CompileStatus::NoClassFiles => "no class files",
+            CompileStatus::SourceChanged => "source changed",
+            CompileStatus::TomlChanged => "curie.toml changed",
+            CompileStatus::UpToDate => "up to date",
+        }
+    }
+}
+
+/// Returns the reason a recompile is (or is not) required.
 pub(crate) fn needs_recompile(
     sources: &[PathBuf],
     classes_dir: &Path,
     toml_path: &Path,
-) -> bool {
+) -> CompileStatus {
     let oldest_class = oldest_mtime_in_dir(classes_dir);
     if oldest_class == SystemTime::UNIX_EPOCH {
-        // No class files yet — must compile.
-        return true;
+        return CompileStatus::NoClassFiles;
     }
-    // Recompile if any .java is newer than the oldest .class.
     if newest_mtime(sources) > oldest_class {
-        return true;
+        return CompileStatus::SourceChanged;
     }
-    // Recompile if curie.toml changed (different deps / Java version / main class).
     if mtime(toml_path) > oldest_class {
-        return true;
+        return CompileStatus::TomlChanged;
     }
-    false
+    CompileStatus::UpToDate
 }
 
 /// Returns `true` when the output JAR needs to be written: either it doesn't
@@ -476,7 +508,7 @@ mod tests {
         let toml = dir.path().join("curie.toml");
         write_file(&toml, b"[application]");
 
-        assert!(needs_recompile(&[src], &classes_dir, &toml));
+        assert_eq!(needs_recompile(&[src], &classes_dir, &toml), CompileStatus::NoClassFiles);
     }
 
     #[test]
@@ -489,7 +521,7 @@ mod tests {
         let toml = dir.path().join("curie.toml");
         write_file(&toml, b"[application]");
 
-        assert!(needs_recompile(&[src], &classes_dir, &toml));
+        assert_eq!(needs_recompile(&[src], &classes_dir, &toml), CompileStatus::NoClassFiles);
     }
 
     #[test]
@@ -511,7 +543,7 @@ mod tests {
         // class is newer than both src and toml
         set_mtime(&class_file, base + Duration::from_secs(10));
 
-        assert!(!needs_recompile(&[src], &classes_dir, &toml));
+        assert_eq!(needs_recompile(&[src], &classes_dir, &toml), CompileStatus::UpToDate);
     }
 
     #[test]
@@ -533,7 +565,7 @@ mod tests {
         write_file(&toml, b"[application]");
         set_mtime(&toml, base - Duration::from_secs(10));
 
-        assert!(needs_recompile(&[src], &classes_dir, &toml));
+        assert_eq!(needs_recompile(&[src], &classes_dir, &toml), CompileStatus::SourceChanged);
     }
 
     #[test]
@@ -555,7 +587,7 @@ mod tests {
         write_file(&toml, b"[application]");
         set_mtime(&toml, base + Duration::from_secs(5));
 
-        assert!(needs_recompile(&[src], &classes_dir, &toml));
+        assert_eq!(needs_recompile(&[src], &classes_dir, &toml), CompileStatus::TomlChanged);
     }
 
     // -- needs_repackage ------------------------------------------------------
