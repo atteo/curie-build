@@ -342,4 +342,242 @@ mod tests {
         assert_eq!(compile.len(), 1);
         assert_eq!(compile[0].artifact_id, "guava");
     }
+
+    // --- parsing: parent --------------------------------------------------------
+
+    #[test]
+    fn parse_parent() {
+        let xml = r#"<?xml version="1.0"?>
+<project>
+  <artifactId>child</artifactId>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent-pom</artifactId>
+    <version>2.0.0</version>
+  </parent>
+</project>"#;
+        let pom = parse(xml).unwrap();
+        let parent = pom.parent.as_ref().expect("parent should be present");
+        assert_eq!(parent.group_id, "com.example");
+        assert_eq!(parent.artifact_id, "parent-pom");
+        assert_eq!(parent.version, "2.0.0");
+    }
+
+    // --- parsing: properties ----------------------------------------------------
+
+    #[test]
+    fn parse_properties() {
+        let xml = r#"<?xml version="1.0"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>myapp</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <my.lib.version>3.5.1</my.lib.version>
+    <encoding>UTF-8</encoding>
+  </properties>
+</project>"#;
+        let pom = parse(xml).unwrap();
+        assert_eq!(pom.properties.get("my.lib.version").map(String::as_str), Some("3.5.1"));
+        assert_eq!(pom.properties.get("encoding").map(String::as_str), Some("UTF-8"));
+    }
+
+    // --- parsing: dependencyManagement ------------------------------------------
+
+    #[test]
+    fn parse_dependency_management() {
+        let xml = r#"<?xml version="1.0"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>bom</artifactId>
+  <version>1.0.0</version>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>2.0.9</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>"#;
+        let pom = parse(xml).unwrap();
+        assert_eq!(
+            pom.managed_versions.get("org.slf4j:slf4j-api").map(String::as_str),
+            Some("2.0.9")
+        );
+        // dependencyManagement entries are NOT in pom.dependencies
+        assert!(pom.dependencies.is_empty());
+    }
+
+    // --- scope / optional filtering --------------------------------------------
+
+    #[test]
+    fn parse_optional_dep_excluded() {
+        let xml = r#"<?xml version="1.0"?>
+<project>
+  <groupId>com.example</groupId><artifactId>x</artifactId><version>1.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>org.example</groupId>
+      <artifactId>optional-lib</artifactId>
+      <version>1.0</version>
+      <optional>true</optional>
+    </dependency>
+  </dependencies>
+</project>"#;
+        let pom = parse(xml).unwrap();
+        let compile: Vec<_> = pom.dependencies.iter().filter(|d| d.is_compile_scope()).collect();
+        assert!(compile.is_empty(), "optional dep should be excluded from compile scope");
+    }
+
+    #[test]
+    fn parse_provided_scope_excluded() {
+        let xml = r#"<?xml version="1.0"?>
+<project>
+  <groupId>com.example</groupId><artifactId>x</artifactId><version>1.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>javax.servlet</groupId>
+      <artifactId>servlet-api</artifactId>
+      <version>2.5</version>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+</project>"#;
+        let pom = parse(xml).unwrap();
+        let compile: Vec<_> = pom.dependencies.iter().filter(|d| d.is_compile_scope()).collect();
+        assert!(compile.is_empty(), "provided-scope dep should be excluded");
+    }
+
+    #[test]
+    fn parse_runtime_scope_included() {
+        let xml = r#"<?xml version="1.0"?>
+<project>
+  <groupId>com.example</groupId><artifactId>x</artifactId><version>1.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <version>42.7.3</version>
+      <scope>runtime</scope>
+    </dependency>
+  </dependencies>
+</project>"#;
+        let pom = parse(xml).unwrap();
+        let compile: Vec<_> = pom.dependencies.iter().filter(|d| d.is_compile_scope()).collect();
+        assert_eq!(compile.len(), 1, "runtime-scope dep should be included");
+        assert_eq!(compile[0].artifact_id, "postgresql");
+    }
+
+    #[test]
+    fn parse_test_scope_excluded() {
+        let xml = r#"<?xml version="1.0"?>
+<project>
+  <groupId>com.example</groupId><artifactId>x</artifactId><version>1.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.10.0</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>"#;
+        let pom = parse(xml).unwrap();
+        let compile: Vec<_> = pom.dependencies.iter().filter(|d| d.is_compile_scope()).collect();
+        assert!(compile.is_empty(), "test-scope dep should be excluded");
+    }
+
+    // --- resolve_value ----------------------------------------------------------
+
+    #[test]
+    fn resolve_project_version() {
+        let mut pom = Pom::default();
+        pom.version = Some("4.2.0".to_string());
+        assert_eq!(pom.resolve_value("${project.version}"), "4.2.0");
+    }
+
+    #[test]
+    fn resolve_project_parent_version() {
+        let mut pom = Pom::default();
+        // own version absent; falls back to parent version
+        pom.parent = Some(ParentRef {
+            group_id: "com.example".to_string(),
+            artifact_id: "parent".to_string(),
+            version: "3.1.0".to_string(),
+        });
+        assert_eq!(pom.resolve_value("${project.parent.version}"), "3.1.0");
+    }
+
+    #[test]
+    fn resolve_custom_property() {
+        let mut pom = Pom::default();
+        pom.version = Some("1.0.0".to_string());
+        pom.properties.insert("jackson.version".to_string(), "2.17.2".to_string());
+        assert_eq!(pom.resolve_value("${jackson.version}"), "2.17.2");
+    }
+
+    #[test]
+    fn resolve_chained_property() {
+        // Mirrors the real jackson-bom chain:
+        //   ${jackson.version.annotations} -> ${jackson.version} -> 2.17.2
+        let mut pom = Pom::default();
+        pom.properties.insert(
+            "jackson.version".to_string(),
+            "2.17.2".to_string(),
+        );
+        pom.properties.insert(
+            "jackson.version.annotations".to_string(),
+            "${jackson.version}".to_string(),
+        );
+        assert_eq!(pom.resolve_value("${jackson.version.annotations}"), "2.17.2");
+    }
+
+    #[test]
+    fn resolve_unknown_property_unchanged() {
+        let pom = Pom::default();
+        // Should return the placeholder as-is, not panic.
+        assert_eq!(pom.resolve_value("${totally.unknown}"), "${totally.unknown}");
+    }
+
+    // --- effective_group / effective_version ------------------------------------
+
+    #[test]
+    fn effective_group_own() {
+        let mut pom = Pom::default();
+        pom.group_id = Some("com.example".to_string());
+        assert_eq!(pom.effective_group(), Some("com.example"));
+    }
+
+    #[test]
+    fn effective_group_fallback_to_parent() {
+        let mut pom = Pom::default();
+        pom.group_id = None;
+        pom.parent = Some(ParentRef {
+            group_id: "com.parent".to_string(),
+            artifact_id: "parent".to_string(),
+            version: "1.0".to_string(),
+        });
+        assert_eq!(pom.effective_group(), Some("com.parent"));
+    }
+
+    #[test]
+    fn effective_version_own() {
+        let mut pom = Pom::default();
+        pom.version = Some("5.0.0".to_string());
+        assert_eq!(pom.effective_version(), Some("5.0.0"));
+    }
+
+    #[test]
+    fn effective_version_fallback_to_parent() {
+        let mut pom = Pom::default();
+        pom.version = None;
+        pom.parent = Some(ParentRef {
+            group_id: "com.example".to_string(),
+            artifact_id: "parent".to_string(),
+            version: "9.9.9".to_string(),
+        });
+        assert_eq!(pom.effective_version(), Some("9.9.9"));
+    }
 }

@@ -23,3 +23,49 @@ pub fn default_repositories() -> Vec<Repository> {
         url: "https://repo1.maven.org/maven2".to_string(),
     }]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn artifact_url_basic() {
+        let repo = Repository {
+            name: "Central".to_string(),
+            url: "https://repo1.maven.org/maven2".to_string(),
+        };
+        assert_eq!(
+            repo.artifact_url("com/example/foo/1.0/foo-1.0.jar"),
+            "https://repo1.maven.org/maven2/com/example/foo/1.0/foo-1.0.jar"
+        );
+    }
+
+    #[test]
+    fn artifact_url_trailing_slash_normalised() {
+        let repo = Repository {
+            name: "Central".to_string(),
+            url: "https://repo1.maven.org/maven2/".to_string(),
+        };
+        let url = repo.artifact_url("com/example/foo/1.0/foo-1.0.jar");
+        assert!(
+            !url.contains("//com"),
+            "double slash in URL: {url}"
+        );
+        assert_eq!(
+            url,
+            "https://repo1.maven.org/maven2/com/example/foo/1.0/foo-1.0.jar"
+        );
+    }
+
+    #[test]
+    fn default_repositories_is_maven_central() {
+        let repos = default_repositories();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].name, "Maven Central");
+        assert!(
+            repos[0].url.contains("repo1.maven.org/maven2"),
+            "unexpected URL: {}",
+            repos[0].url
+        );
+    }
+}

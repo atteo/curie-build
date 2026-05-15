@@ -116,6 +116,40 @@ mod tests {
     }
 
     #[test]
+    fn parse_trims_whitespace() {
+        let g = Gav::from_key_version("  com.example  :  foo  ", "  1.0  ").unwrap();
+        assert_eq!(g.group, "com.example");
+        assert_eq!(g.artifact, "foo");
+        assert_eq!(g.version, "1.0");
+    }
+
+    #[test]
+    fn parse_missing_colon() {
+        assert!(Gav::from_key_version("nocohereseparator", "1.0").is_err());
+    }
+
+    #[test]
+    fn parse_empty_group() {
+        assert!(Gav::from_key_version(":artifact", "1.0").is_err());
+    }
+
+    #[test]
+    fn parse_empty_artifact() {
+        assert!(Gav::from_key_version("com.example:", "1.0").is_err());
+    }
+
+    #[test]
+    fn parse_empty_version() {
+        assert!(Gav::from_key_version("com.example:foo", "").is_err());
+    }
+
+    #[test]
+    fn group_path_dots_to_slashes() {
+        let g = Gav::from_key_version("com.example.foo:bar", "1.0").unwrap();
+        assert_eq!(g.group_path(), "com/example/foo");
+    }
+
+    #[test]
     fn relative_path() {
         let g = Gav::from_key_version("com.google.guava:guava", "33.2.0-jre").unwrap();
         assert_eq!(
@@ -125,7 +159,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_missing_colon() {
-        assert!(Gav::from_key_version("nocohereseparator", "1.0").is_err());
+    fn relative_pom_path() {
+        let g = Gav::from_key_version("com.google.guava:guava", "33.2.0-jre").unwrap();
+        assert_eq!(
+            g.relative_pom_path(),
+            "com/google/guava/guava/33.2.0-jre/guava-33.2.0-jre.pom"
+        );
+    }
+
+    #[test]
+    fn notation() {
+        let g = Gav::from_key_version("com.example:foo", "2.0").unwrap();
+        assert_eq!(g.notation(), "com.example:foo:2.0");
+    }
+
+    #[test]
+    fn display_equals_notation() {
+        let g = Gav::from_key_version("com.example:foo", "2.0").unwrap();
+        assert_eq!(format!("{}", g), g.notation());
     }
 }
