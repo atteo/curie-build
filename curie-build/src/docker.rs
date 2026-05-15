@@ -1,3 +1,4 @@
+use crate::build::mtime;
 use crate::descriptor::Descriptor;
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -120,7 +121,7 @@ fn build_with_generated_dockerfile(
     let docker_dir = project_root.join("target").join("docker");
     std::fs::create_dir_all(&docker_dir).context("failed to create target/docker")?;
 
-    // Copy the JAR into the build context directory.
+    // Copy the JAR into the build context directory (skip if already current).
     let jar_filename = jar
         .file_name()
         .context("JAR path has no filename")?
@@ -128,15 +129,18 @@ fn build_with_generated_dockerfile(
         .to_string();
 
     let jar_dest = docker_dir.join(&jar_filename);
-    std::fs::copy(jar, &jar_dest)
-        .with_context(|| format!("failed to copy JAR to {}", jar_dest.display()))?;
+    if mtime(jar) > mtime(&jar_dest) {
+        std::fs::copy(jar, &jar_dest)
+            .with_context(|| format!("failed to copy JAR to {}", jar_dest.display()))?;
+    }
 
-    // Copy dependency JARs into target/docker/libs/.
+    // Copy dependency JARs into target/docker/libs/ (skip up-to-date files).
     let mut dep_filenames: Vec<String> = Vec::new();
     if !dep_jars.is_empty() {
         let libs_dir = docker_dir.join("libs");
         std::fs::create_dir_all(&libs_dir).context("failed to create target/docker/libs")?;
 
+        let mut copied = 0usize;
         for dep in dep_jars {
             let fname = dep
                 .file_name()
@@ -144,12 +148,19 @@ fn build_with_generated_dockerfile(
                 .to_string_lossy()
                 .to_string();
             let dest = libs_dir.join(&fname);
-            std::fs::copy(dep, &dest)
-                .with_context(|| format!("failed to copy dep JAR {} to {}", dep.display(), dest.display()))?;
+            if mtime(dep) > mtime(&dest) {
+                std::fs::copy(dep, &dest)
+                    .with_context(|| format!("failed to copy dep JAR {} to {}", dep.display(), dest.display()))?;
+                copied += 1;
+            }
             dep_filenames.push(fname);
         }
 
-        println!("  Copied {} dep JAR(s) to target/docker/libs/", dep_filenames.len());
+        if copied > 0 {
+            println!("  Copied {} dep JAR(s) to target/docker/libs/", copied);
+        } else {
+            println!("  Dep JARs up to date");
+        }
     }
 
     // Generate the Dockerfile.
