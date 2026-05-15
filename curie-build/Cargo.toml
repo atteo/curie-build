@@ -1,0 +1,17 @@
+[package]
+name = "curie-build"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "curie"
+path = "src/main.rs"
+
+[dependencies]
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+walkdir = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+curie-deps = { path = "../curie-deps" }

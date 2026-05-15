@@ -1,0 +1,56 @@
+mod build;
+mod descriptor;
+mod docker;
+mod run;
+
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+#[derive(Parser)]
+#[command(name = "curie", about = "The Curie build tool", version)]
+struct Cli {
+    /// Path to the project root (defaults to current directory)
+    #[arg(long, default_value = ".")]
+    project: PathBuf,
+
+    #[command(subcommand)]
+    command: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Compile the project, package a JAR, and (when applicable) build a Docker image
+    Build {
+        /// Skip Docker build even when Docker support is configured
+        #[arg(long)]
+        no_docker: bool,
+    },
+    /// Build the project and run it (via Docker or java -jar)
+    Run {
+        /// Skip Docker; run directly with java -jar
+        #[arg(long)]
+        no_docker: bool,
+
+        /// Arguments to pass to the application (after --)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    let result = match cli.command {
+        Cmd::Build { no_docker } => {
+            build::build(&cli.project, build::BuildOptions { no_docker })
+        }
+        Cmd::Run { no_docker, args } => {
+            run::run(&cli.project, run::RunOptions { no_docker }, &args)
+        }
+    };
+
+    if let Err(e) = result {
+        eprintln!("error: {:#}", e);
+        std::process::exit(1);
+    }
+}

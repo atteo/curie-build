@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "curie-build",
+    "curie-deps",
+]
+resolver = "2"
